@@ -2,7 +2,10 @@ import pandas as pd
 import numpy as np
 import ast
 import os
+from collections import Counter
 from sklearn.preprocessing import MultiLabelBinarizer, StandardScaler
+from sklearn.impute import SimpleImputer
+
 
 def load_and_clean_data():
     # Use the absolute path logic
@@ -16,43 +19,46 @@ def load_and_clean_data():
     
     return df
 
+
 def engineer_features(df):
     # Parse nested JSON-like strings safely
     def parse_json(val):
-        try:
-            return [i['name'] for i in ast.literal_eval(val)]
-        except:
-            return []
+        return [i['name'] for i in ast.literal_eval(val)]
 
     # Apply to both Genres and Keywords to increase feature count
     df['genres'] = df['genres'].apply(parse_json)
     df['keywords'] = df['keywords'].apply(parse_json)
     
     # Filter keywords by frequency (10+ occurrences)
-    # Flatten all keywords into a single list to count frequencies
     all_keywords = [k for sublist in df['keywords'] for k in sublist]
-    from collections import Counter
     keyword_counts = Counter(all_keywords)
     
     # Keep only keywords that appear in at least 10 movies
     frequent_keywords = {k for k, count in keyword_counts.items() if count >= 10}
     df['keywords'] = df['keywords'].apply(lambda x: [k for k in x if k in frequent_keywords])
     
-    # Encoding for both
+    # 3. Encoding for both text columns
     mlb_genres = MultiLabelBinarizer()
     genre_df = pd.DataFrame(mlb_genres.fit_transform(df['genres']), columns=mlb_genres.classes_, index=df.index)
     
     mlb_keywords = MultiLabelBinarizer()
     keyword_df = pd.DataFrame(mlb_keywords.fit_transform(df['keywords']), columns=mlb_keywords.classes_, index=df.index)
     
+    # In-line Imputation for Numerical Gaps
+    # Isolate the continuous numerical columns to patch missing values
+    num_cols = ['budget', 'runtime']
+    imputer = SimpleImputer(strategy='median')
+    df[num_cols] = imputer.fit_transform(df[num_cols])
+    
     # Numerical Scaling
     scaler = StandardScaler()
-    df[['budget', 'runtime']] = scaler.fit_transform(df[['budget', 'runtime']])
+    df[num_cols] = scaler.fit_transform(df[num_cols])
     
     # Combine into Final Design Matrix (X)
-    final_df = pd.concat([df[['budget', 'runtime']], genre_df, keyword_df], axis=1)
+    final_df = pd.concat([df[num_cols], genre_df, keyword_df], axis=1)
     
     return final_df
+
     
 if __name__ == "__main__":
     raw_df = load_and_clean_data()
@@ -60,6 +66,6 @@ if __name__ == "__main__":
     print("Feature Matrix (X) successfully created.")
     print(f"Matrix Shape: {X.shape}")
     print(X.head())
-    
+
     # Check for proper datatypes
     print(X.dtypes.value_counts())
