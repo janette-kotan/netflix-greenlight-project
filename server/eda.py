@@ -22,12 +22,13 @@ def run_data_audit():
         print(f"Error: Could not find dataset at {data_path}")
         return
 
+    #Load movies.csv
     df = pd.read_csv(data_path)
 
     print(f"Total Movies/Rows: {df.shape[0]}")
     print(f"Total Attributes/Columns: {df.shape[1]}")
 
-    print("\n Parsing nested text arrays (Genres and Keywords)...")
+    #Parse nested text arrays (Genres and Keywords)
     for col in ['genres', 'keywords']:
         if col in df.columns:
             df[col] = df[col].apply(parse_json_column)
