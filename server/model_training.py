@@ -83,7 +83,6 @@ def run_pipeline():
     print("--- MODEL PERFORMANCE COMPARISON ---")
     print(f"OLS Baseline  -> MAE: {ols_mae:.2f} | R2: {ols_r2:.4f}")
     print(f"Random Forest -> MAE: {rf_mae:.2f} | R2: {rf_r2:.4f}")
-    print("------------------------------------")
 
     # 6. Serialization Layer (FastAPI / Deployment Boundary)
     # Save the trained ensemble weights so the live server can reference them instantly
@@ -92,6 +91,37 @@ def run_pipeline():
     joblib.dump(rf, model_output_path)
     print(f"Production model successfully serialized to: {model_output_path}")
 
+def analyze_feature_signals():
+    df_raw = pd.read_csv("data/movies.csv")
+    X = engineer_features(df_raw)
+    Y = df_raw["popularity"]
+    
+    if "popularity" in X.columns:
+        X = X.drop(columns=["popularity"])
+        
+    X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2, random_state=42)
+
+    # Train an initial Random Forest to calculate importance weights
+    rf = RandomForestRegressor(n_estimators=100, max_depth=15, random_state=42, n_jobs=-1)
+    rf.fit(X_train, Y_train)
+
+    # Pair column names with their importance metrics
+    importances = rf.feature_importances_
+    feature_ranking = pd.DataFrame({
+        "Feature": X.columns,
+        "Importance": importances
+    }).sort_values(by="Importance", ascending=False).reset_index(drop=True)
+
+    # Display the Top 20 most powerful signals
+    print("\n--- TOP 20 PREDICTIVE SIGNALS ---")
+    print(feature_ranking.head(20).to_string(index=False))
+    print("---------------------------------\n")
+
+    # Measure how much total variance explanation remains in the top 150 features
+    top_150_importance = feature_ranking.head(150)["Importance"].sum()
+    print(f"Cumulative importance captured by the top 150 features: {top_150_importance:.4f}")
+
 if __name__ == "__main__":
     run_ols_baseline()
     run_pipeline()
+    analyze_feature_signals()
