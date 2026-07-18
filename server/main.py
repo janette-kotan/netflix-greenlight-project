@@ -1,11 +1,15 @@
 import os
 import joblib
 import pandas as pd
-from contextlib import asynccontextmanager
 from typing import List
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from feature_engineering import engineer_features
+from agents import run_production_agent_pipeline
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Global container to keep the trained model cached in system memory
 ml_models = {}
@@ -16,7 +20,6 @@ async def lifespan(app: FastAPI):
     Loads the serialized model into RAM once when the web server boots up, 
     preventing slow disk-read overhead on future API prediction requests.
     """
-
     base_dir = os.path.dirname(os.path.abspath(__file__))
     model_path = os.path.join(base_dir, "models", "demand_model.pkl")
     
@@ -44,67 +47,71 @@ app = FastAPI(
 
 class MoviePitchInput(BaseModel):
     """
-    Strict input validation contract mapping the raw text and metadata variables
-    sent from the browser UI down to the backend dataframe shapes.
+    Input validation contract mapping incoming pitch data.
     """
-    title: str = Field(..., example="Inception 2")
-    budget: float = Field(..., gt=0, example=150000000.0)
-    runtime: float = Field(..., gt=0, example=148.0)
-    genres: List[str] = Field(..., example=["Action", "Science Fiction", "Thriller"])
-    keywords: List[str] = Field(..., example=["dream", "subconscious", "heist"])
+    title: str = Field(..., json_schema_extra={"example": "Joseon Reborn"})
+    pitch: str = Field(..., json_schema_extra={"example": "A story about a girl from the Joseon era..."})
+    budget: float = Field(50000000.0, gt=0, json_schema_extra={"example": 45000000.0})
+    runtime: float = Field(100.0, gt=0, json_schema_extra={"example": 110.0})
 
-class PredictionResponse(BaseModel):
+# --- CORE FEATURE BRIDGING INTERFACE ---
+
+def prepare_model_input(agent_output: dict, target_model, budget: float, runtime: float):
     """
-    Output structure ensuring a clean JSON payload is returned to the dashboard,
-    ready to be ingested by D3.js network links.
+    Formats the clean structured text arrays out of the local AI agent crew
+    to perfectly mirror the TMDB Kaggle string dictionary layout.
     """
-    title: str
-    predicted_demand_score: float
-    status: str
+    formatted_genres = [{"name": g} for g in agent_output.get("genres", [])]
+    formatted_keywords = [{"name": k} for k in agent_output.get("keywords", [])]
+    
+    input_dict = {
+        "budget": budget,
+        "runtime": runtime,
+        "genres": str(formatted_genres),
+        "keywords": str(formatted_keywords)
+    }
+    
+    # Process through your pristine feature engineering script
+    df = pd.DataFrame([input_dict])
+    X_processed = engineer_features(df)
+    
+    # Dynamically align to the exact 730 features expected by the Random Forest
+    X_aligned = X_processed.reindex(columns=target_model.feature_names_in_, fill_value=0)    
+
+    return X_aligned
 
 # --- CORE INFERENCE ROUTE ---
-@app.post("/predict", response_model=PredictionResponse)
-async def predict_pitch(payload: MoviePitchInput):
+
+@app.post("/predict")
+async def predict_demand(payload: MoviePitchInput):
+    # 1. Fetch the globally cached Random Forest model from memory
+    model = ml_models.get("demand_model")
+    if not model:
+        raise HTTPException(status_code=503, detail="Predictive Random Forest model is not loaded.")
+        
     try:
-        # 1. Format incoming data for the AST parser
-        formatted_genres = [{"name": g} for g in payload.genres]
-        formatted_keywords = [{"name": k} for k in payload.keywords]
+        # 2. Kick off local AI agents asynchronously to extract deep thematic tropes
+        agent_features = await run_production_agent_pipeline(payload.pitch)
         
-        raw_data = {
-            "title": [payload.title],
-            "budget": [payload.budget],
-            "runtime": [payload.runtime],
-            "genres": [str(formatted_genres)],
-            "keywords": [str(formatted_keywords)]
-        }
-        
-        df_pitch = pd.DataFrame(raw_data)
-        
-        # Extract the cached model from memory
-        model = ml_models.get("demand_model")
-        if not model:
-            raise HTTPException(status_code=503, detail="Predictive model is not loaded.")
-        
-        # Transform the raw input using your Week 2 logic
-        X_raw_processed = engineer_features(df_pitch)
-        
-        # FEATURE ALIGNMENT BRIDGING
-        # Pull the exact 730 features the Random Forest was trained on
-        expected_features = model.feature_names_in_
-        
-        # Reindex forces the 1-row dataframe to match the 730 columns perfectly.
-        # Existing columns keep their values; missing features (like '1950s') are filled with 0.
-        X_aligned = X_raw_processed.reindex(columns=expected_features, fill_value=0)
-        
-        # Generate the real-time continuous prediction
-        prediction = model.predict(X_aligned)[0]
-        
-        # Return response
-        return PredictionResponse(
-            title=payload.title,
-            predicted_demand_score=round(float(prediction), 4),
-            status="Success"
+        # 3. Translate qualitative findings into the exact 730 feature matrix shape
+        X_matrix = prepare_model_input(
+            agent_output=agent_features, 
+            target_model=model,
+            budget=payload.budget, 
+            runtime=payload.runtime
         )
+        
+        # 4. Generate the real-time continuous popularity estimation
+        popularity_prediction = model.predict(X_matrix)[0]
+        
+        # 5. Construct the corporate output response payload
+        return {
+            "status": "success",
+            "title": payload.title,
+            "predicted_popularity": round(float(popularity_prediction), 4),
+            "extracted_metadata": agent_features,
+            "input_summary": f"Your project was analyzed as a {', '.join(agent_features.get('genres', []))} concept."
+        }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Inference pipeline execution failure: {str(e)}")

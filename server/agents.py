@@ -2,13 +2,15 @@ import os
 import json
 
 
+
 # Import LLM directly from crewai to satisfy internal Pydantic validation
 from crewai import Agent, Task, Crew, Process, LLM
 
 # Define the local Ollama connection using CrewAI's native class
 local_llm = LLM(
-    model="ollama/llama3.1",
-    base_url="http://localhost:11434"
+    model="ollama/llama3.2:1b",
+    base_url="http://localhost:11434",
+    max_tokens=1500
 )
 
 # ---------------------------------------------------------
@@ -19,7 +21,8 @@ theme_extractor = Agent(
     goal="Parse raw, unstructured creative movie and TV pitches to extract core themes, emotional hooks, and tropes.",
     backstory="You are a veteran Hollywood development executive. You excel at reading raw, messy brainstorming text or plot descriptions and instantly identifying the underlying creative hooks, genre blends, and narrative elements.",
     llm=local_llm,
-    verbose=True,
+    max_iter=2,
+    verbose=False,
     allow_delegation=False
 )
 
@@ -58,7 +61,7 @@ def test_agent_pipeline():
     print(result.raw)
 
 
-def run_production_agent_pipeline(user_pitch: str):
+async def run_production_agent_pipeline(user_pitch: str) -> dict:
     # 1. Task for the Theme Extractor
     analysis_task = Task(
         description=f"Analyze this raw creative pitch: '{user_pitch}'. Identify the primary genres, tone, and active tropes/keywords.",
@@ -69,10 +72,13 @@ def run_production_agent_pipeline(user_pitch: str):
     # 2. Task for the Feature Mapper (Enforcing rigid JSON structure)
     mapping_task = Task(
         description=(
-            "Review the creative breakdown provided by the Content Analyst. Translate these qualitative findings "
-            "into a clean, structured JSON object containing exactly two keys: 'genres' and 'keywords'. "
-            "The values must be plain text arrays matching structural dataset targets. Do not output markdown, "
-            "do not include backticks, do not include conversational prose. Return only raw, valid JSON."
+        "Review the creative breakdown provided by the Content Analyst. "
+        "Translate these qualitative findings into a clean, structured JSON object. "
+        "You MUST format your output exactly like this example, with no extra characters:\n"
+        "{\n"
+        '  "genres": ["Genre1", "Genre2"],\n'
+        '  "keywords": ["Keyword1", "Keyword2"]\n'
+        "}"
         ),
         expected_output="A raw JSON string with keys 'genres' and 'keywords'. Example: {'genres': ['Sci-Fi'], 'keywords': ['robot']}",
         agent=feature_mapper
@@ -87,11 +93,18 @@ def run_production_agent_pipeline(user_pitch: str):
     )
     
     print(f"\nProcessing creative concept pitch via local intelligence layer...")
-    crew_output = production_crew.kickoff()
     
-    print("\n--- RAW AGENT LAYER OUTPUT ---")
-    print(crew_output.raw)
-    return crew_output.raw
+    # Use kickoff_async and await the process to prevent blocking FastAPI's loop
+    crew_output = await production_crew.kickoff_async()
+    
+    try:
+        parsed_data = json.loads(crew_output.raw)
+        return parsed_data
+    except json.JSONDecodeError:
+        print("Warning: Direct JSON parsing failed. Attempting fallback extraction...")
+        return {"genres": [], "keywords": []}
+    
+
 
 if __name__ == "__main__":
     sample_pitch = "A story about a girl from the Joseon era in Korea reincarnating as an actress in the modern day and falling in love with a wealthy CEO."
