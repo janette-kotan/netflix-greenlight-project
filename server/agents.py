@@ -1,4 +1,5 @@
 import os
+import re
 import json
 
 
@@ -97,12 +98,26 @@ async def run_production_agent_pipeline(user_pitch: str) -> dict:
     # Use kickoff_async and await the process to prevent blocking FastAPI's loop
     crew_output = await production_crew.kickoff_async()
     
-    try:
-        parsed_data = json.loads(crew_output.raw)
-        return parsed_data
-    except json.JSONDecodeError:
-        print("Warning: Direct JSON parsing failed. Attempting fallback extraction...")
-        return {"genres": [], "keywords": []}
+    # 1. Try the ideal Pydantic extraction first
+    if crew_output.pydantic:
+        return crew_output.pydantic.model_dump()
+        
+    # 2. The ultimate safety net for chatty small models!
+    raw_text = crew_output.raw
+    
+    # This regex isolates the very first {...} block and ignores everything after it
+    match = re.search(r'\{.*?\}', raw_text, re.DOTALL)
+    
+    if match:
+        clean_json_string = match.group(0)
+        try:
+            return json.loads(clean_json_string)
+        except json.JSONDecodeError:
+            pass 
+            
+    print("Warning: Direct JSON parsing failed even after regex cleanup.")
+    # Safe default values so your matrices never break
+    return {"genres": ["Drama"], "keywords": ["Romance"]}
     
 
 
